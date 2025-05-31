@@ -1,0 +1,145 @@
+#!/usr/bin/env python
+import re
+import torch
+import nltk
+from tqdm import tqdm
+from nltk.corpus import cmudict
+from g2p_en import G2p
+from transformers import AutoModelForCausalLM, AutoTokenizer, LogitsProcessor
+from transformers.pipelines import TextGenerationPipeline
+from uniformers.metrics import load_metric
+from uniformers.models.bygpt5 import ByGPT5Config, ByGPT5LMHeadModel, ByGPT5Tokenizer
+from uniformers.utils import Poetry2Tokens
+
+# Download CMU dictionary
+nltk.download("cmudict")
+cmu_dict = cmudict.dict()
+g2p = G2p()
+
+# Register ByGPT5 model/tokenizer/config
+from transformers.models.auto.configuration_auto import CONFIG_MAPPING
+from transformers.models.auto.modeling_auto import MODEL_FOR_CAUSAL_LM_MAPPING
+from transformers.models.auto.tokenization_auto import TOKENIZER_MAPPING
+
+CONFIG_MAPPING.register(ByGPT5Config.model_type, ByGPT5Config)
+TOKENIZER_MAPPING.register(ByGPT5Config, (ByGPT5Tokenizer, None))
+MODEL_FOR_CAUSAL_LM_MAPPING.register(ByGPT5Config, ByGPT5LMHeadModel)
+
+# Utility functions for phonemes
+def strip_digits(phoneme):
+    return re.sub(r'\d+', '', phoneme)
+
+def get_initial_phoneme(word):
+    phonemes = g2p(word)
+    return strip_digits(phonemes[0]) if phonemes else ""
+
+def get_vowel_sounds(word):
+    vowels = set()
+    for ph in g2p(word):
+        if any(char.isdigit() for char in ph):
+            vowels.add(strip_digits(ph))
+    return vowels
+
+# Logits processor to boost tokens starting with chosen phoneme or vowels
+class PhonemeBoostLogitsProcessor(LogitsProcessor):
+    def __init__(self, tokenizer, chosen_phoneme, chosen_vowels, prompt, max_word_len=10):
+        self.tokenizer = tokenizer
+        self.chosen_phoneme = chosen_phoneme
+        self.chosen_vowels = chosen_vowels
+        self.max_word_len = max_word_len
+        self.prompt_len = len(prompt)
+
+    def __call__(self, input_ids, scores):
+        text = self.tokenizer.decode(input_ids[0], skip_special_tokens=True)
+        text = text[self.prompt_len:].lstrip()
+
+        match = re.search(r'\b(\w{1,%d})$' % self.max_word_len, text)
+        current_word = match.group(1).lower() if match else ""
+
+        for i in range(scores.shape[-1]):
+            char = self.tokenizer.decode([i])
+            if not char.isalpha():
+                continue
+
+            candidate_word = (current_word + char).lower()
+            if len(candidate_word) < 2:
+                continue
+
+            phoneme = get_initial_phoneme(candidate_word)
+            vowels = get_vowel_sounds(candidate_word)
+
+            if phoneme and phoneme.startswith(self.chosen_phoneme):
+                scores[0, i] += 3
+                print(f"BOOST (phoneme): '{candidate_word}' -> starts with phoneme '{phoneme}'")
+            if vowels and any(v in self.chosen_vowels for v in vowels):
+                scores[0, i] += 3
+                print(f"BOOST (vowel): '{candidate_word}' -> vowels: {vowels}")
+        return scores
+
+# Controlled generation function
+def generate(model_name, rhyme, meter, alliteration, device="cpu", verse=None, num_samples=5, max_length=500):
+    model = AutoModelForCausalLM.from_pretrained(model_name).to(device)
+    tokenizer = AutoTokenizer.from_pretrained(model_name)
+    p2t = Poetry2Tokens(tokenizer)
+
+    pipeline = TextGenerationPipeline(
+        model=model,
+        tokenizer=tokenizer,
+        device=0 if device == "cuda" else -1,
+    )
+
+    prompt = (
+        tokenizer.bos_token
+        + p2t.rhymes2tokens[rhyme]
+        + p2t.meters2tokens[meter]
+        + p2t.alliterations2tokens[alliteration]
+        + (f"{verse}\n" if verse else "")
+    )
+
+    prompt_words = verse.split() if verse else []
+    second_word = prompt_words[1] if len(prompt_words) >= 2 else ""
+    third_word = prompt_words[2] if len(prompt_words) >= 3 else ""
+
+    chosen_phoneme = get_initial_phoneme(second_word) or ""
+    chosen_vowels = get_vowel_sounds(third_word)
+
+    logits_processors = []
+    if chosen_phoneme or chosen_vowels:
+        logits_processors.append(
+            PhonemeBoostLogitsProcessor(tokenizer, chosen_phoneme, chosen_vowels, prompt)
+        )
+    print(f"Phoneme: {chosen_phoneme}, Chosen_vowels: {chosen_vowels}")
+
+    outputs = pipeline(
+        prompt,
+        return_full_text=False,
+        max_length=max_length,
+        num_return_sequences=num_samples,
+        do_sample=True,
+        temperature=0.95,
+        top_p=0.9,
+        top_k=50,
+        logits_processor=logits_processors if logits_processors else None,
+    )
+
+    return [(f"{verse}\n" if verse else "") + out['generated_text'] for out in outputs]
+
+
+# === MAIN ===
+if __name__ == "__main__":
+    model_name = "nllg/poetry-bygpt5-base-en"
+    # Control parameters:
+    rhyme = "AABB"
+    meter = "iambus"
+    alliteration = "high"
+    verse = "The wind forgot my name last night,"
+
+    print(f"Generating controlled poems with rhyme='{rhyme}', meter='{meter}', alliteration='{alliteration}', verse='{verse}'")
+
+    poems = generate(model_name, rhyme, meter, alliteration, device="cpu", verse=verse, num_samples=5)
+
+    print("\n=== Generated Poems ===")
+    for i, poem in enumerate(poems, 1):
+        print(f"\n--- Poem {i} ---")
+        print(poem.strip())
+
