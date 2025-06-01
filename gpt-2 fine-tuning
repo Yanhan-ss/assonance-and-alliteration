@@ -41,7 +41,7 @@ def format_poem(entry):
     cleaned_lines = [re.sub(r"[={}]", "", line).strip() for line in entry["text"]]
 
     return (
-        f"<alliteration_{entry['alliteration']}>"f"<assonance_{entry['assonance']}>\n"+
+        f"<rhyme_{entry['rhyme']}>f"<alliteration_{entry['alliteration']}>"f"<assonance_{entry['assonance']}>\n"+
         "\n".join(cleaned_lines) +
         "\n<|endofpoem|>\n"
     )
