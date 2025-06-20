@@ -1,5 +1,5 @@
 # assonance-and-alliteration
-We tried three methods of training a language model to generate poems with semantic and phonetic constraints.
+We experimented with three methods of training a language model to generate poems with semantic and phonetic constraints.
 Mainly, we want to have a model that can generate fixed-length, four-line poems. Each poem contains two pairs of rhymes, a high level of assonance(repetition of certain vowels within a line), and a high level of alliteration (repetition of initial phonemes within a line). 
 
 First method: hand-crafted generation rule.
