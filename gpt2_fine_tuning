@@ -4,8 +4,6 @@
 from google.colab import drive
 drive.mount('/content/drive')
 
-# Install dependencies if needed
-
 # Load required modules
 import json
 from transformers import GPT2Tokenizer, GPT2LMHeadModel
@@ -29,17 +27,17 @@ special_tokens = {
 
 tokenizer.add_special_tokens(special_tokens)
 
-# Explicitly set the pad_token to "<|pad|>"
+# Set the pad_token to "<|pad|>"
 tokenizer.pad_token = "<|pad|>"
 
 # Load the GPT-2 model
 model = GPT2LMHeadModel.from_pretrained("gpt2")
 model.resize_token_embeddings(len(tokenizer))
 
-# Set the pad_token_id to the corresponding ID of your padding token
+# Set the pad_token_id to the corresponding ID of the padding token
 model.config.pad_token_id = tokenizer.pad_token_id  # Use your dedicated pad token id
 
-# Load your dataset
+# Load dataset
 with open("/content/drive/MyDrive/prepare_data.json", "r") as f:
     data = [json.loads(line) for line in f]
 
