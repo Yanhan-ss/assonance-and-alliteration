@@ -1,0 +1,109 @@
+!pip install transformers torch datasets
+
+# Mount Google Drive
+from google.colab import drive
+drive.mount('/content/drive')
+
+# Install dependencies if needed
+
+# Load required modules
+import json
+from transformers import GPT2Tokenizer, GPT2LMHeadModel
+from datasets import Dataset
+import torch
+import re
+
+tokenizer = GPT2Tokenizer.from_pretrained("/content/drive/MyDrive/gpt2-poetry/checkpoint-81000")
+
+special_tokens = {
+    "eos_token": "<|endofpoem|>",
+    "pad_token": "<|pad|>",  # Dedicated padding token
+    "additional_special_tokens": [
+        "<rhyme_AAAA>", "<rhyme_AAAB>", "<rhyme_AABA>", "<rhyme_AABB>", "<rhyme_AABC>",
+        "<rhyme_ABAA>", "<rhyme_ABAB>", "<rhyme_ABAC>", "<rhyme_ABBA>", "<rhyme_ABBB>",
+        "<rhyme_ABBC>", "<rhyme_ABCA>", "<rhyme_ABCB>", "<rhyme_ABCC>", "<rhyme_ABCD>",
+        "<alliteration_low>", "<alliteration_medium>", "<alliteration_high>",
+        "<assonance_low>", "<assonance_medium>", "<assonance_high>"
+    ]
+}
+
+tokenizer.add_special_tokens(special_tokens)
+
+# Explicitly set the pad_token to "<|pad|>"
+tokenizer.pad_token = "<|pad|>"
+
+# Load the GPT-2 model
+model = GPT2LMHeadModel.from_pretrained("gpt2")
+model.resize_token_embeddings(len(tokenizer))
+
+# Set the pad_token_id to the corresponding ID of your padding token
+model.config.pad_token_id = tokenizer.pad_token_id  # Use your dedicated pad token id
+
+# Load your dataset
+with open("/content/drive/MyDrive/prepare_data.json", "r") as f:
+    data = [json.loads(line) for line in f]
+
+def format_poem(entry):
+    cleaned_lines = [re.sub(r"[={}]", "", line).strip() for line in entry["text"]]
+
+    return (
+        f"<rhyme_{entry['rhyme']}>"f"<alliteration_{entry['alliteration']}>"f"<assonance_{entry['assonance']}>\n"+
+        "\n".join(cleaned_lines) +
+        "\n<|endofpoem|>\n"
+    )
+formatted_poems = [format_poem(p) for p in data]
+
+
+# Convert to Hugging Face dataset
+dataset = Dataset.from_dict({"text": formatted_poems})
+
+# Tokenize the dataset
+def tokenize(example):
+    return tokenizer(example["text"], truncation=True)
+
+tokenized_dataset = dataset.map(tokenize, batched=True, remove_columns=["text"])
+
+# Print a few tokenized examples to inspect
+print("Sample tokenized examples:")
+for i in range(3):  # Print first 3 examples
+    print(f"Example {i + 1}:")
+    print("Input IDs:", tokenized_dataset[i]["input_ids"])
+    print("Tokenized Text:", tokenizer.decode(tokenized_dataset[i]["input_ids"]))
+    print("-" * 50)
+from transformers import DataCollatorForLanguageModeling, Trainer, TrainingArguments
+
+# Data collator
+data_collator = DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=False)
+
+# Training arguments
+training_args = TrainingArguments(
+    output_dir="/content/drive/MyDrive/gpt2-poetry_extra",
+    overwrite_output_dir=True,
+    num_train_epochs=10,
+    per_device_train_batch_size=32,
+    save_steps=3000,
+    save_total_limit=2,
+    logging_steps=200,
+    resume_from_checkpoint=True,
+    prediction_loss_only=True,
+    learning_rate=5e-5,  # Set learning rate
+    weight_decay=0.01,
+    fp16=torch.cuda.is_available(),
+    logging_dir='/content/drive/MyDrive/logs',# Enable mixed precision if using GPU
+)
+
+# Trainer
+trainer = Trainer(
+    model=model,
+    args=training_args,
+    train_dataset=tokenized_dataset,
+    tokenizer=tokenizer,
+    data_collator=data_collator,
+
+)
+
+# Start training
+trainer.train()
+
+trainer.save_model("/content/drive/MyDrive/gpt2-poetry")
+tokenizer.save_pretrained("/content/drive/MyDrive/gpt2-poetry")
